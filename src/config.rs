@@ -123,6 +123,7 @@ pub static AGENTS: Lazy<HashMap<&'static str, AgentConfig>> = Lazy::new(|| {
                 name: "reasonix",
                 badge: "reasonix",
                 color: ratatui::style::Color::Rgb(79, 70, 229),
+                light_color: ratatui::style::Color::Rgb(55, 48, 165),
             },
         ),
         (
