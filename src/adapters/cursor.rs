@@ -1,8 +1,11 @@
 //! Cursor CLI stores each chat in a small SQLite key-value database. Values
 //! vary across releases, so parsing accepts structured JSON and the legacy
 //! plain-user-message encoding while leaving unknown binary records untouched.
+//! Cursor IDE agent transcripts are JSONL logs under `~/.cursor/projects`.
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local, TimeZone};
@@ -12,11 +15,11 @@ use serde_json::Value;
 use walkdir::WalkDir;
 
 use crate::config;
-use crate::model::{RawAdapterStats, Session, file_timestamp, truncate_title};
+use crate::model::{RawAdapterStats, Session, file_mtime_seconds, file_timestamp, truncate_title};
 
 use super::shared::{
-    IncrementalParse, build_resume_command, incremental_scan, percent_decode, sqlite_file_stats,
-    sqlite_mtime,
+    IncrementalParse, build_resume_command, content_texts, incremental_parse_jsonl,
+    incremental_scan, percent_decode, sqlite_file_stats, sqlite_mtime,
 };
 use super::{Adapter, IncrementalScan, KnownSessions, SessionCallback};
 
@@ -25,12 +28,14 @@ type SessionFiles = HashMap<String, (PathBuf, f64)>;
 #[derive(Debug, Clone)]
 pub struct CursorAdapter {
     chats_dir: PathBuf,
+    projects_dir: PathBuf,
 }
 
 impl Default for CursorAdapter {
     fn default() -> Self {
         Self {
             chats_dir: config::cursor_chats_dir(),
+            projects_dir: config::cursor_projects_dir(),
         }
     }
 }
@@ -51,38 +56,31 @@ impl CursorAdapter {
     }
 
     #[allow(dead_code)]
-    pub fn new(chats_dir: PathBuf) -> Self {
-        Self { chats_dir }
+    pub fn new(chats_dir: PathBuf, projects_dir: PathBuf) -> Self {
+        Self {
+            chats_dir,
+            projects_dir,
+        }
     }
 
     fn scan_session_files(&self) -> Option<(SessionFiles, bool)> {
-        let mut files = HashMap::new();
-        let mut complete = true;
-        if !self.chats_dir.exists() {
-            return Some((files, complete));
-        }
-        if !self.chats_dir.is_dir() {
-            return None;
-        }
-        for entry in WalkDir::new(&self.chats_dir) {
-            let Ok(entry) = entry else {
-                complete = false;
-                continue;
-            };
-            let path = entry.path();
+        let (mut files, mut complete) = scan_root(&self.chats_dir, |path| {
             if path.file_name().and_then(|name| name.to_str()) != Some("store.db") {
-                continue;
+                return None;
             }
-            let Some(id) = path
+            let id = path
                 .parent()
                 .and_then(Path::file_name)
                 .and_then(|name| name.to_str())
-                .filter(|id| !id.is_empty())
-            else {
-                continue;
-            };
-            files.insert(id.to_string(), (path.to_path_buf(), sqlite_mtime(path)));
-        }
+                .filter(|id| !id.is_empty())?;
+            Some((id.to_string(), path.to_path_buf(), sqlite_mtime(path)))
+        });
+        let (transcripts, transcripts_complete) = scan_root(&self.projects_dir, |path| {
+            let id = transcript_session_id(path)?;
+            Some((id, path.to_path_buf(), file_mtime_seconds(path)))
+        });
+        complete &= transcripts_complete;
+        files.extend(transcripts);
         Some((files, complete))
     }
 
@@ -167,11 +165,84 @@ impl CursorAdapter {
     }
 
     fn parse_incremental(&self, path: &Path) -> IncrementalParse {
+        if transcript_session_id(path).is_some() {
+            return incremental_parse_jsonl(path, || self.parse_transcript(path));
+        }
         match self.parse_session(path) {
             Ok(Some(session)) => IncrementalParse::Session(session),
             Ok(None) => IncrementalParse::Delete,
             Err(_) => IncrementalParse::Retain,
         }
+    }
+
+    fn load_session(&self, path: &Path) -> Option<Session> {
+        if transcript_session_id(path).is_some() {
+            self.parse_transcript(path)
+        } else {
+            self.parse_session(path).ok().flatten()
+        }
+    }
+
+    fn parse_transcript(&self, path: &Path) -> Option<Session> {
+        let file = File::open(path).ok()?;
+        let mut messages = Vec::new();
+        let mut first_user = String::new();
+        for line in BufReader::new(file).lines().map_while(Result::ok) {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(user) = transcript_role(&value) else {
+                continue;
+            };
+            let Some(content) = value
+                .get("message")
+                .and_then(|message| message.get("content"))
+            else {
+                continue;
+            };
+            for text in content_texts(content) {
+                let text = if user {
+                    cursor_user_text(&text)
+                } else {
+                    text.trim().to_string()
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                if user && first_user.is_empty() {
+                    first_user.clone_from(&text);
+                }
+                messages.push((user, text));
+            }
+        }
+        if first_user.is_empty() {
+            return None;
+        }
+        let id = path
+            .file_stem()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let user_turns = messages.iter().filter(|(user, _)| *user).count();
+        let content = messages
+            .into_iter()
+            .map(|(user, text)| format!("{}{text}", if user { "» " } else { "  " }))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let mut session = Session::new(
+            id,
+            self.name(),
+            truncate_title(&first_user, 100, true),
+            String::new(),
+            file_timestamp(path),
+            content,
+            user_turns,
+        );
+        session.mtime = file_mtime_seconds(path);
+        Some(session)
     }
 }
 
@@ -189,7 +260,7 @@ impl Adapter for CursorAdapter {
             .map(|(files, _)| {
                 files
                     .into_values()
-                    .filter_map(|(path, _)| self.parse_session(&path).ok().flatten())
+                    .filter_map(|(path, _)| self.load_session(&path))
                     .collect()
             })
             .unwrap_or_default()
@@ -212,7 +283,9 @@ impl Adapter for CursorAdapter {
     }
 
     fn raw_stats(&self) -> RawAdapterStats {
-        if !self.chats_dir.exists() {
+        let chats_exist = self.chats_dir.exists();
+        let projects_exist = self.projects_dir.exists();
+        if !chats_exist && !projects_exist {
             return RawAdapterStats {
                 agent: self.name(),
                 data_dir: self.chats_dir.display().to_string(),
@@ -223,24 +296,119 @@ impl Adapter for CursorAdapter {
         }
         let mut file_count = 0;
         let mut total_bytes = 0;
-        for entry in WalkDir::new(&self.chats_dir)
-            .into_iter()
-            .filter_map(Result::ok)
-        {
-            if entry.path().file_name().and_then(|name| name.to_str()) == Some("store.db") {
-                let (files, bytes) = sqlite_file_stats(entry.path());
-                file_count += files;
-                total_bytes += bytes;
+        if chats_exist {
+            for entry in WalkDir::new(&self.chats_dir)
+                .into_iter()
+                .filter_map(Result::ok)
+            {
+                if entry.path().file_name().and_then(|name| name.to_str()) == Some("store.db") {
+                    let (files, bytes) = sqlite_file_stats(entry.path());
+                    file_count += files;
+                    total_bytes += bytes;
+                }
             }
         }
+        if projects_exist {
+            for entry in WalkDir::new(&self.projects_dir)
+                .into_iter()
+                .filter_map(Result::ok)
+            {
+                if transcript_session_id(entry.path()).is_some()
+                    && let Ok(metadata) = entry.metadata()
+                {
+                    file_count += 1;
+                    total_bytes += metadata.len();
+                }
+            }
+        }
+        let data_dir = if chats_exist {
+            &self.chats_dir
+        } else {
+            &self.projects_dir
+        };
         RawAdapterStats {
             agent: self.name(),
-            data_dir: self.chats_dir.display().to_string(),
+            data_dir: data_dir.display().to_string(),
             available: true,
             file_count,
             total_bytes,
         }
     }
+}
+
+fn scan_root(
+    root: &Path,
+    mut accept: impl FnMut(&Path) -> Option<(String, PathBuf, f64)>,
+) -> (SessionFiles, bool) {
+    let mut files = HashMap::new();
+    if !root.exists() {
+        return (files, true);
+    }
+    if !root.is_dir() {
+        return (files, false);
+    }
+    let mut complete = true;
+    for entry in WalkDir::new(root) {
+        let Ok(entry) = entry else {
+            complete = false;
+            continue;
+        };
+        let Some((id, path, mtime)) = accept(entry.path()) else {
+            continue;
+        };
+        files.insert(id, (path, mtime));
+    }
+    (files, complete)
+}
+
+fn transcript_session_id(path: &Path) -> Option<String> {
+    if path.extension().and_then(|extension| extension.to_str()) != Some("jsonl") {
+        return None;
+    }
+    if path
+        .components()
+        .any(|component| component.as_os_str() == "subagents")
+    {
+        return None;
+    }
+    let id = path.file_stem().and_then(|name| name.to_str())?;
+    if id.is_empty() {
+        return None;
+    }
+    let parent = path.parent()?;
+    if parent.file_name().and_then(|name| name.to_str()) != Some(id) {
+        return None;
+    }
+    if parent
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        != Some("agent-transcripts")
+    {
+        return None;
+    }
+    Some(id.to_string())
+}
+
+fn transcript_role(value: &Value) -> Option<bool> {
+    match value.get("role").and_then(Value::as_str) {
+        Some("user") => Some(true),
+        Some("assistant") => Some(false),
+        _ => None,
+    }
+}
+
+fn cursor_user_text(text: &str) -> String {
+    const START: &str = "<user_query>";
+    const END: &str = "</user_query>";
+    if let Some(start) = text.find(START)
+        && let Some(relative_end) = text[start + START.len()..].find(END)
+    {
+        return text[start + START.len()..start + START.len() + relative_end]
+            .trim()
+            .to_string();
+    }
+    text.trim().to_string()
 }
 
 #[derive(Debug)]
@@ -431,7 +599,7 @@ fn cursor_directory_from_path(path: &Path) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or_default();
     let decoded = percent_decode(encoded);
-    if Path::new(&decoded).is_absolute() {
+    if Path::new(&decoded).is_absolute() || decoded.starts_with('/') {
         decoded
     } else {
         Default::default()
@@ -440,6 +608,7 @@ fn cursor_directory_from_path(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::{fs, thread, time::Duration};
 
     use rusqlite::Connection;
@@ -489,7 +658,7 @@ mod tests {
         }
         drop(connection);
 
-        let adapter = CursorAdapter::new(temp.path().to_path_buf());
+        let adapter = CursorAdapter::new(temp.path().to_path_buf(), temp.path().join("projects"));
         let sessions = adapter.find_sessions();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, id);
@@ -536,7 +705,7 @@ mod tests {
             )
             .unwrap();
 
-        let adapter = CursorAdapter::new(temp.path().to_path_buf());
+        let adapter = CursorAdapter::new(temp.path().to_path_buf(), temp.path().join("projects"));
         let initial = adapter.find_sessions().pop().unwrap();
         let mut known = KnownSessions::new();
         known.insert(("cursor".to_string(), id.to_string()), initial.mtime);
@@ -570,5 +739,96 @@ mod tests {
 
         let message = cursor_plain_user_message(format!("price is $5${id}").as_bytes());
         assert_eq!(message.as_deref(), Some("price is $5"));
+    }
+
+    #[test]
+    fn drops_relative_decoded_directories() {
+        let path = Path::new("chats/work%2Fcursor/id/store.db");
+        assert_eq!(cursor_directory_from_path(path), "");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn keeps_windows_drive_directories() {
+        let path = Path::new(r"C:\chats\C%3A%5Crepo\id\store.db");
+        assert_eq!(cursor_directory_from_path(path), r"C:\repo");
+    }
+
+    #[test]
+    fn parses_ide_transcript_and_skips_tool_calls_and_subagents() {
+        let temp = tempdir().unwrap();
+        let id = "11111111-2222-3333-4444-555555555555";
+        let transcript_dir = temp.path().join("repo").join("agent-transcripts").join(id);
+        fs::create_dir_all(&transcript_dir).unwrap();
+        fs::write(
+            transcript_dir.join(format!("{id}.jsonl")),
+            [
+                json!({"role":"user","message":{"content":[{"type":"text","text":"<timestamp>Monday</timestamp>\n<user_query>\nIndex this IDE chat\n</user_query>"}]}}).to_string(),
+                json!({"role":"assistant","message":{"content":[{"type":"text","text":"Indexed the transcript"},{"type":"tool_use","name":"Shell","input":{"command":"ls"}}]}}).to_string(),
+                json!({"type":"turn_ended","status":"success"}).to_string(),
+                json!({"role":"system","message":{"content":[{"type":"text","text":"system payload"}]}}).to_string(),
+            ]
+            .join("\n"),
+        )
+        .unwrap();
+        let hidden = temp
+            .path()
+            .join("repo")
+            .join("subagents")
+            .join("agent-transcripts")
+            .join("hidden-id");
+        fs::create_dir_all(&hidden).unwrap();
+        fs::write(
+            hidden.join("hidden-id.jsonl"),
+            json!({"role":"user","message":{"content":[{"type":"text","text":"hidden subagent"}]}})
+                .to_string(),
+        )
+        .unwrap();
+
+        let adapter = CursorAdapter::new(temp.path().join("chats"), temp.path().to_path_buf());
+        let sessions = adapter.find_sessions();
+
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, id);
+        assert_eq!(sessions[0].title, "Index this IDE chat");
+        assert!(sessions[0].directory.is_empty());
+        assert_eq!(sessions[0].message_count, 1);
+        assert!(sessions[0].content.contains("Index this IDE chat"));
+        assert!(sessions[0].content.contains("Indexed the transcript"));
+        assert!(!sessions[0].content.contains("tool_use"));
+        assert!(!sessions[0].content.contains("ls"));
+        assert!(!sessions[0].content.contains("system payload"));
+        assert!(!sessions[0].content.contains("hidden subagent"));
+        assert_eq!(
+            adapter.resume_command(&sessions[0], false),
+            vec!["agent", "--resume", id]
+        );
+    }
+
+    #[test]
+    fn malformed_transcript_retains_known_session() {
+        let temp = tempdir().unwrap();
+        let id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let transcript_dir = temp.path().join("repo").join("agent-transcripts").join(id);
+        fs::create_dir_all(&transcript_dir).unwrap();
+        let transcript = transcript_dir.join(format!("{id}.jsonl"));
+        fs::write(
+            &transcript,
+            json!({"role":"user","message":{"content":[{"type":"text","text":"Original IDE prompt"}]}})
+                .to_string(),
+        )
+        .unwrap();
+        let adapter = CursorAdapter::new(temp.path().join("chats"), temp.path().to_path_buf());
+        let session = adapter.find_sessions().pop().unwrap();
+        let mut known = KnownSessions::new();
+        known.insert(("cursor".to_string(), id.to_string()), session.mtime);
+
+        thread::sleep(Duration::from_millis(20));
+        fs::write(&transcript, "Original IDE prompt\n{").unwrap();
+
+        let scan = adapter.find_sessions_incremental(&known);
+
+        assert!(scan.new_or_modified.is_empty());
+        assert!(scan.deleted_ids.is_empty());
     }
 }
