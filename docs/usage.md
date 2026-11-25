@@ -228,9 +228,10 @@ Yolo mode resumes an agent with its auto-approve or skip-permissions option when
 | Vibe | `--agent auto-approve` | Yes |
 | OpenCode | Configuration-based | — |
 | Pi | Not applicable | — |
+| Reasonix | Not applicable | — |
 | Copilot in VS Code | Not applicable | — |
 
-Codex and Vibe record their permission mode in session data, so fast-resume can preserve it automatically. Antigravity CLI, Claude, Copilot CLI, Crush, Cursor CLI, Grok Build, and Kimi Code do not; the TUI asks before resuming them. Freebuff and Pi have no fast-resume yolo variant. Pass `fr --yolo` to skip prompts and force supported options for agents that have one.
+Codex and Vibe record their permission mode in session data, so fast-resume can preserve it automatically. Antigravity CLI, Claude, Copilot CLI, Crush, Cursor CLI, Grok Build, and Kimi Code do not; the TUI asks before resuming them. Freebuff, Pi, and Reasonix have no fast-resume yolo variant. Pass `fr --yolo` to skip prompts and force supported options for agents that have one.
 
 ## Statistics
 
