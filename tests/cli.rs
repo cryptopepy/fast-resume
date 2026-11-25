@@ -211,6 +211,55 @@ fn write_reasonix_session(home: &Path, id: &str, directory: &str, prompt: &str) 
     session_file
 }
 
+fn write_freebuff_session(home: &Path, id: &str, directory: &str, prompt: &str) -> PathBuf {
+    let chat_dir = home
+        .join(".config/manicode/projects/fast-resume/chats")
+        .join(id);
+    fs::create_dir_all(&chat_dir).unwrap();
+    fs::write(
+        chat_dir.join("chat-messages.json"),
+        json!([
+            {
+                "id": "user-1",
+                "variant": "user",
+                "content": prompt,
+                "timestamp": "2026-08-01T10:00:00.000Z"
+            },
+            {
+                "id": "ai-1",
+                "variant": "ai",
+                "content": "",
+                "timestamp": "2026-08-01T10:00:01.000Z",
+                "blocks": [
+                    {"type": "text", "content": "Freebuff response"},
+                    {
+                        "type": "tool",
+                        "toolName": "run_terminal_command",
+                        "toolCallId": "tool-1",
+                        "input": {"command": "cargo test"},
+                        "output": "tool output must stay out of the index"
+                    }
+                ]
+            }
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        chat_dir.join("run-state.json"),
+        json!({
+            "traceSessionId": "trace-1",
+            "sessionState": {
+                "fileContext": {"projectRoot": directory, "cwd": directory, "fileTree": []}
+            },
+            "output": {"type": "error", "message": "No output yet"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    chat_dir
+}
+
 fn write_jsonl(path: &Path, rows: &[Value]) {
     fs::write(
         path,
@@ -473,6 +522,47 @@ fn lists_reasonix_sessions() {
         );
     }
     assert!(stdout.contains("Showing 1 of 1 sessions"));
+}
+
+#[test]
+fn lists_and_filters_freebuff_sessions() {
+    let temp = TempDir::new().unwrap();
+    let chat_id = "2026-08-01T10-00-00.000Z";
+    write_freebuff_session(
+        temp.path(),
+        chat_id,
+        "/repo/freebuff",
+        "Freebuff binary coverage",
+    );
+
+    let (stdout, stderr) = assert_success(run_fr(temp.path(), &["--list"]));
+    assert!(stderr.is_empty());
+    for expected in ["freebuff", chat_id, "Freebuff binary coverage"] {
+        assert!(
+            stdout.contains(expected),
+            "missing {expected} in:\n{stdout}"
+        );
+    }
+    assert!(!stdout.contains("tool output must stay out of the index"));
+    assert!(stdout.contains("Showing 1 of 1 sessions"));
+
+    let (agent_stdout, _) = assert_success(run_fr(temp.path(), &["--list", "agent:freebuff"]));
+    assert!(agent_stdout.contains(chat_id));
+    assert!(agent_stdout.contains("Showing 1 of 1 sessions"));
+
+    let (query_stdout, _) = assert_success(run_fr(temp.path(), &["--list", "Freebuff binary"]));
+    assert!(query_stdout.contains(chat_id));
+
+    let (json_stdout, _) = assert_success(run_fr(temp.path(), &["--json", "agent:freebuff"]));
+    let json: Value = serde_json::from_str(&json_stdout).unwrap();
+    let session = &json["sessions"].as_array().unwrap()[0];
+    assert_eq!(session["id"], chat_id);
+    assert_eq!(session["agent"], "freebuff");
+    assert_eq!(session["directory"], "/repo/freebuff");
+    assert_eq!(
+        session["resume_command"],
+        json!(["freebuff", "--continue", chat_id])
+    );
 }
 
 #[test]

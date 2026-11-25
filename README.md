@@ -21,7 +21,7 @@ Coding agents can resume previous sessions, but searching those sessions is ofte
 
 ## Supported agents
 
-Antigravity CLI, Claude Code, Codex, Copilot CLI, Copilot in VS Code, Crush, Cursor CLI and IDE, Grok Build, Kimi Code, OpenCode, Pi, Reasonix, and Vibe. See [how it works](docs/how-it-works.md#session-adapters) for storage formats and resume behavior.
+Antigravity CLI, Claude Code, Codex, Copilot CLI, Copilot in VS Code, Crush, Cursor CLI and IDE, Freebuff, Grok Build, Kimi Code, OpenCode, Pi, Reasonix, and Vibe. See [how it works](docs/how-it-works.md#session-adapters) for storage formats and resume behavior.
 
 ## Install
 

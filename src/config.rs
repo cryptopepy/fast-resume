@@ -10,13 +10,14 @@ use once_cell::sync::Lazy;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const INDEX_SCHEMA_VERSION: u32 = 24;
 
-pub const AGENT_ORDER: [&str; 13] = [
+pub const AGENT_ORDER: [&str; 14] = [
     "antigravity",
     "claude",
     "codex",
     "copilot-cli",
     "crush",
     "cursor",
+    "freebuff",
     "grok",
     "kimi",
     "opencode",
@@ -70,6 +71,15 @@ pub static AGENTS: Lazy<HashMap<&'static str, AgentConfig>> = Lazy::new(|| {
                 badge: "cursor",
                 color: ratatui::style::Color::Rgb(255, 255, 255),
                 light_color: ratatui::style::Color::Rgb(30, 30, 30),
+            },
+        ),
+        (
+            "freebuff",
+            AgentConfig {
+                name: "freebuff",
+                badge: "freebuff",
+                color: ratatui::style::Color::Rgb(124, 255, 63),
+                light_color: ratatui::style::Color::Rgb(58, 140, 20),
             },
         ),
         (
@@ -211,6 +221,13 @@ pub fn cursor_chats_dir() -> PathBuf {
 
 pub fn cursor_projects_dir() -> PathBuf {
     home_dir().join(".cursor").join("projects")
+}
+
+pub fn freebuff_projects_dir() -> PathBuf {
+    env_path("FREEBUFF_CONFIG_DIR")
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home_dir().join(".config").join("manicode"))
+        .join("projects")
 }
 
 pub fn grok_sessions_dir() -> PathBuf {

@@ -25,6 +25,7 @@ Each adapter maps an agent-specific format into the shared `Session` model.
 | Copilot in VS Code | VS Code chat-session JSON | Reads request text, response values, and workspace references |
 | Crush | Per-project SQLite database | Queries sessions and messages and parses JSON message parts |
 | Cursor | `~/.cursor/chats/*/*/store.db` and `~/.cursor/projects/*/agent-transcripts/<id>/<id>.jsonl` | Reads CLI SQLite metadata and user/assistant records, plus IDE transcript text. Skips subagent files and tool calls |
+| Freebuff | `~/.config/manicode/projects/<project>/chats/<id>/chat-messages.json` | Reads user messages and assistant text blocks, recovering the working directory from `run-state.json` and excluding tool output and subagent transcripts |
 | Grok Build | `$GROK_HOME/sessions/<workspace>/<id>/{summary.json,updates.jsonl}` | Reads session metadata, combines streamed ACP message chunks, and applies rewind markers |
 | Kimi Code | `$KIMI_CODE_HOME/session_index.jsonl`, session `state.json`, and `agents/main/wire.jsonl` | Reads working directories, session metadata, user messages, and streamed assistant text |
 | OpenCode | SQLite or legacy split JSON | Joins sessions, messages, and text parts |
@@ -32,7 +33,7 @@ Each adapter maps an agent-specific format into the shared `Session` model.
 | Reasonix | `~/.reasonix/projects/<slug>/sessions/*.jsonl` | Reads per-project session transcripts and `.jsonl.meta` sidecar metadata |
 | Vibe | `meta.json` and `messages.jsonl` | Reads metadata, role-based content, and auto-approve state |
 
-Grok discovery respects `GROK_HOME`. Kimi Code discovery uses `$KIMI_CODE_HOME/sessions/`, defaulting to `~/.kimi-code/sessions/`. Pi discovery respects `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR`, and the global `settings.json` `sessionDir`. Project-local `sessionDir` overrides outside that configured store cannot be discovered automatically.
+Freebuff discovery respects `FREEBUFF_CONFIG_DIR`, defaulting to `~/.config/manicode`. Grok discovery respects `GROK_HOME`. Kimi Code discovery uses `$KIMI_CODE_HOME/sessions/`, defaulting to `~/.kimi-code/sessions/`. Pi discovery respects `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR`, and the global `settings.json` `sessionDir`. Project-local `sessionDir` overrides outside that configured store cannot be discovered automatically.
 
 The normalized model contains:
 
@@ -130,6 +131,7 @@ Each adapter returns the command needed to continue its session:
 | Copilot in VS Code | `code <directory>` | No change |
 | Crush | `crush --session <id>` | `crush --yolo --session <id>` |
 | Cursor | `agent --resume <id>` | `agent --yolo --resume <id>` |
+| Freebuff | `freebuff --continue <id>` | No change |
 | Grok Build | `grok --resume <id>` | `grok --always-approve --resume <id>` |
 | Kimi Code | `kimi --session <id>` | `kimi --yolo --session <id>` |
 | OpenCode | `opencode <directory> --session <id>` | No change |
