@@ -24,7 +24,7 @@ Each adapter maps an agent-specific format into the shared `Session` model.
 | Copilot CLI | `~/.copilot/session-state/**/*.jsonl` | Reads session identity, user messages, assistant messages, and titles |
 | Copilot in VS Code | VS Code chat-session JSON | Reads request text, response values, and workspace references |
 | Crush | Per-project SQLite database | Queries sessions and messages and parses JSON message parts |
-| Cursor CLI | `~/.cursor/chats/*/*/store.db` | Reads session metadata and user/assistant records from Cursor's local SQLite stores |
+| Cursor | `~/.cursor/chats/*/*/store.db` and `~/.cursor/projects/*/agent-transcripts/<id>/<id>.jsonl` | Reads CLI SQLite metadata and user/assistant records, plus IDE transcript text. Skips subagent files and tool calls |
 | Grok Build | `$GROK_HOME/sessions/<workspace>/<id>/{summary.json,updates.jsonl}` | Reads session metadata, combines streamed ACP message chunks, and applies rewind markers |
 | Kimi Code | `$KIMI_CODE_HOME/session_index.jsonl`, session `state.json`, and `agents/main/wire.jsonl` | Reads working directories, session metadata, user messages, and streamed assistant text |
 | OpenCode | SQLite or legacy split JSON | Joins sessions, messages, and text parts |
@@ -128,14 +128,14 @@ Each adapter returns the command needed to continue its session:
 | Copilot CLI | `copilot --resume <id>` | `copilot --yolo --resume <id>` |
 | Copilot in VS Code | `code <directory>` | No change |
 | Crush | `crush --session <id>` | `crush --yolo --session <id>` |
-| Cursor CLI | `agent --resume <id>` | `agent --yolo --resume <id>` |
+| Cursor | `agent --resume <id>` | `agent --yolo --resume <id>` |
 | Grok Build | `grok --resume <id>` | `grok --always-approve --resume <id>` |
 | Kimi Code | `kimi --session <id>` | `kimi --yolo --session <id>` |
 | OpenCode | `opencode <directory> --session <id>` | No change |
 | Pi | `pi --session <id>` | No change |
 | Vibe | `vibe --resume <id>` | `vibe --agent auto-approve --resume <id>` |
 
-`exec()` replaces fast-resume with the agent process, and the agent receives the session's working directory.
+On Unix, `exec()` replaces fast-resume with the agent process. On Windows, fast-resume waits for the agent and exits with its status. In both cases the agent receives the session's working directory.
 
 ## Performance
 

@@ -12,6 +12,7 @@ fn run_fr(home: &Path, args: &[&str]) -> Output {
         .args(args)
         .env_clear()
         .env("HOME", home)
+        .env("USERPROFILE", home)
         .output()
         .unwrap()
 }
@@ -126,6 +127,24 @@ fn write_new_agent_sessions(home: &Path) {
             ),
         )
         .unwrap();
+
+    let transcript_id = "cursor-ide-123";
+    let transcript_dir = home
+        .join(".cursor/projects/repo/agent-transcripts")
+        .join(transcript_id);
+    fs::create_dir_all(&transcript_dir).unwrap();
+    write_jsonl(
+        &transcript_dir.join(format!("{transcript_id}.jsonl")),
+        &[json!({
+            "role": "user",
+            "message": {
+                "content": [{
+                    "type": "text",
+                    "text": "<user_query>\nCursor IDE coverage\n</user_query>"
+                }]
+            }
+        })],
+    );
 }
 
 fn write_kimi_session(home: &Path, id: &str, directory: &str, prompt: &str) -> PathBuf {
@@ -388,6 +407,7 @@ fn lists_antigravity_cursor_and_grok_sessions() {
         "Antigravity binary coverage",
         "cursor",
         "Cursor binary coverage",
+        "Cursor IDE coverage",
         "grok",
         "Grok binary coverage",
     ] {
@@ -396,7 +416,7 @@ fn lists_antigravity_cursor_and_grok_sessions() {
             "missing {expected} in:\n{stdout}"
         );
     }
-    assert!(stdout.contains("Showing 3 of 3 sessions"));
+    assert!(stdout.contains("Showing 4 of 4 sessions"));
 }
 
 #[test]

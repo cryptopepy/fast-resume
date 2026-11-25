@@ -151,7 +151,14 @@ pub fn is_agent(value: &str) -> bool {
 }
 
 pub fn home_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
+    // `dirs` resolves the Windows profile through the shell API and ignores
+    // USERPROFILE. Honor that variable first so a cleared test environment can
+    // point discovery at a fixture.
+    env::var_os("USERPROFILE")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 pub fn cache_dir() -> PathBuf {
@@ -190,6 +197,10 @@ pub fn antigravity_dir() -> PathBuf {
 
 pub fn cursor_chats_dir() -> PathBuf {
     home_dir().join(".cursor").join("chats")
+}
+
+pub fn cursor_projects_dir() -> PathBuf {
+    home_dir().join(".cursor").join("projects")
 }
 
 pub fn grok_sessions_dir() -> PathBuf {
